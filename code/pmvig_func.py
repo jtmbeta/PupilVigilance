@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Sun Mar 28 13:23:19 2021
+
+Functions for analysing data from the psychomotor vigilance experiment
+======================================================================
 
 @author: jtm
+
 """
 import os
 import os.path as op
