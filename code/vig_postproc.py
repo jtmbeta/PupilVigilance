@@ -8,33 +8,21 @@ Created on Wed Nov  3 12:21:31 2021
 
 # %% Imports  and config
 
-import glob
-import sys
-
 from scipy.stats import norm
 import matplotlib.pyplot as plt
 from mne.stats import permutation_cluster_1samp_test
 import pandas as pd
 import seaborn as sns
+import numpy as np
 
-from vig_func import (new_dataset,
-                      read_dataset,
-                      mask_blinks,
-                      butterworth_series,
-                      calculate_RTs,
-                      calculate_sd_outcomes,
-                      pupil_preprocessing_fig,
-                      extract,
-                      reject_bad_trials,
-                      mad)
+from vig_func import mad
 
 sns.set(context='paper', style='ticks', font='helvetica', font_scale=2.1)
 
 # %%  Plot histogram of RTs (hits and false alarms)
 
 # Open the store and filter the metadata
-key_store = pd.HDFStore('../analysis/key_events.h5')
-keys = [k for k in key_store.keys() if not 'meta' in k]
+key_store = pd.HDFStore('../vig/analysis/key_events.h5')
 
 # Gather key presses from all subjects into a single DataFrame
 df = pd.DataFrame()
@@ -47,7 +35,7 @@ key_store.close()
 
 # Save descriptive statistivcs of RTs for Subject | Outcome
 df.groupby(by=['subject', 'outcome'])['RT'].describe().to_csv(
-    '../analysis/RT_descriptive_statistics.csv')
+    '../vig/analysis/RT_descriptive_statistics.csv')
 
 # Median and median absolute deviation RT for hits across all subjects. We only
 # consider RTs less than 6000 ms, which is the minimum time between rare events
@@ -93,12 +81,13 @@ plt.setp(ax2.get_xticklabels(), ha='right', rotation=45)
 fig.tight_layout()
 fig.text(.55, .000001, 'Time to last critical signal (ms)', ha='center')
 fig.savefig(
-    '../analysis/manuscript_figs/rtsdist.tiff', dpi=300, bbox_inches='tight')
+    '../vig/analysis/manuscript_figs/rtsdist.tiff',
+    dpi=300, bbox_inches='tight')
 
 # %% Calculate percentage outcomes (H, M, CR, FA) per Subject | Watch period
 
 # Open the store and filter the metadata
-event_store = pd.HDFStore('../analysis/exp_events.h5')
+event_store = pd.HDFStore('../vig/analysis/exp_events.h5')
 keys = [k for k in event_store.keys() if not 'meta' in k]
 
 # Gather events from all subjects into a single DataFrame
@@ -135,7 +124,7 @@ accuracy = accuracy.reset_index()
 accuracy_rm = accuracy.pivot(
     index='subject', columns=['timeblock', 'outcome'], values=['percentage'])
 accuracy_rm.columns = accuracy_rm.columns.map('|'.join).str.strip('|')
-accuracy_rm.to_csv('../analysis/rm_percentage_outcomes.csv')
+accuracy_rm.to_csv('../vig/analysis/rm_percentage_outcomes.csv')
 
 # %% Calculate signal detection outcomes (d' and c) per Subject | Watch period
 
@@ -149,7 +138,7 @@ sdt = sdt.reset_index()
 # Save for repeated measures analysis in JASP / SPSS
 sdt_rm = sdt.pivot(index='subject', columns=['timeblock'], values=['dp', 'c'])
 sdt_rm.columns = sdt_rm.columns.map('|'.join).str.strip('|')
-sdt_rm.to_csv('../analysis/rm_c_dp_timeblock.csv')
+sdt_rm.to_csv('../vig/analysis/rm_c_dp_timeblock.csv')
 
 # %% Plot performance measures
 
@@ -175,6 +164,8 @@ ax2.set_ylim((0, 3))
 
 # Plot RT for hits
 rt_hits = df.loc[df.outcome == 'H'].groupby(
+    ['subject', 'timeblock'], as_index=False)['RT'].mean()
+rt_fa = df.loc[df.outcome == 'FA'].groupby(
     ['subject', 'timeblock'], as_index=False)['RT'].mean()
 ax3 = fig.add_subplot(233)
 sns.pointplot(x='timeblock', y='RT',
@@ -206,77 +197,362 @@ ax5.set_ylim((.7, 1.4))
 plt.tight_layout()
 
 # Save figure, also RT hit data for repeated measures analysis in JASP / SPSS
-fig.savefig('../analysis/manuscript_figs/behavioral_data.tiff', dpi=300)
+fig.savefig('../vig/analysis/manuscript_figs/behavioral_data.tiff', dpi=300)
 rthits_rm = rt_hits.pivot(index='subject', columns=['timeblock'], values='RT')
 rthits_rm.columns = rthits_rm.columns.map('|'.join).str.strip('|')
-rthits_rm.to_csv('../analysis/rm_rt_hits_timeblock.csv')
+rthits_rm.to_csv('../vig/analysis/rm_rt_hits_timeblock.csv')
 
-# %% Plot response-locked (H, FA) pupil traces
+# %% Cluster permutation stats for button-locked (H, FA) pupil traces
 
 # Open the store
-key_ranges = pd.HDFStore('../analysis/key_ranges_50hz.h5')
-key_baselines = pd.HDFStore('../analysis/baselines_')
+key_ranges = pd.HDFStore('../vig/analysis/key_ranges_50hz.h5')
+key_baselines = pd.HDFStore('../vig/analysis/key_baselines_50hz.h5')
 
 # Gather data from all subjects into a single DataFrame
-df = pd.DataFrame()
+df_keys = pd.DataFrame()
+df_key_baselines = pd.DataFrame()
+df_key_evoked_scalar = pd.DataFrame()
 for k in key_ranges.keys():
-    d = key_ranges[k].rename(columns={'event': 'event_type'}).reset_index()
-    d = d[d.reject == 0]
-    d['subject'] = k[1:]
-    d['pz'] = (d.p - d.p.mean()) / d.p.std()
-    d = d.groupby(by=['subject', 'outcome', 'onset'], as_index=False).mean()
-    d.onset = (d.onset - 50) * (1/50)
-    df = df.append(d)
-key_ranges.close()
 
-# Filter hits and false alarms, aggregate for permutation tests
-df = df[df.outcome.isin(['H', 'FA'])]
-df = df.groupby(['subject', 'outcome', 'onset']).mean()
+    # Load pupil data and add subject ID
+    p = key_ranges[k].rename(columns={'event': 'event_type'}).reset_index()
+    p['subject'] = k[1:]
+
+    # Load baselines and drop those which contain a blink
+    bls = key_baselines[k].reset_index()
+    bls['subject'] = k[1:]
+    categories = (p.groupby(['event', 'outcome', 'timeblock'], as_index=False)
+                   .count()[['event', 'outcome', 'timeblock']])
+    bls = bls.merge(categories, on='event')
+
+    # Get indices of valid trials. These are trials which contain less than
+    # 25 percent interpolated data and which do not contain a blink in the
+    # baseline period.
+    use_trials = np.intersect1d(
+        p[p.reject == 0].event.unique(),  # As marked by reject_bad_trials
+        bls[bls.masked == 0].event.to_numpy())  # No blink in baseline
+
+    # Calculate z score of pupil data
+    p['pz'] = (p.p - p.p.mean()) / p.p.std()
+    bls['pz'] = (bls.p - bls.p.mean()) / bls.p.std()
+
+    # Get the scalar values for evoked responses
+    evoked = (p.loc[((p.event.isin(use_trials)) & (p.onset >= 50))]
+              .groupby(by=['subject', 'timeblock', 'outcome'], as_index=False)
+              .mean())
+
+    # Drop trials with blink in baseline or too much interpolated data and
+    # then average by subject / outcome / onset
+    p = (p.set_index('event').loc[use_trials]
+         .reset_index()
+         .groupby(by=['subject', 'outcome', 'onset'], as_index=False)
+         .mean())
+    bls = (bls.set_index('event').loc[use_trials]
+           .reset_index()
+           .groupby(by=['subject', 'timeblock', 'outcome'],
+                    as_index=False)['pz']
+           .mean())
+
+    # Time relevant to stimulus onset. For button events, the baseline is from
+    # -1000:-500 ms.
+    p['Time'] = (p.onset - 50) * (1/50)
+    # Add to aggregated DFs
+    df_keys = df_keys.append(p)
+    df_key_baselines = df_key_baselines.append(bls)
+    df_key_evoked_scalar = df_key_evoked_scalar.append(evoked)
+
+# Close the stores
+key_ranges.close()
+key_baselines.close()
+
+df_keys.to_csv(
+    '../vig/analysis/ag_pupil_key_traces_subject_outcome_onset.csv')
+df_key_baselines.to_csv(
+    '../vig/analysis/ag_pupil_key_baselines_subject_outcome_onset.csv')
+df_key_evoked_scalar.to_csv(
+    '../vig/analysis/ag_pupil_event_evoked_scalar_subject_outcome_onset.csv')
+
+# Set relevant multi index
+df_keys = df_keys.set_index(['subject', 'outcome', 'onset'])
 
 # Perform cluster-based permutation stats
 print('*** Cluster permutation tests for response-locked pupil traces ***\n')
-data = df['p_pc'].unstack()
+
+# Prepare the data
+data = df_keys['p_pc'].unstack()
+
+# Test for hits
+print('\n> Hits')
 result_H = permutation_cluster_1samp_test(
     data.loc[:, 'H', :].values, out_type='mask')
-print('Slices and p-values ')
-print(result_H[1:3])
+print(f'> Significance and slice indices: {result_H[1:3]}')
+
+# Test for false alarms
+print('\n> False alarms')
 result_FA = permutation_cluster_1samp_test(
     data.loc[:, 'FA', :].values, out_type='mask')
-print(result_FA[1:3])
-diff = data.loc[:, 'H', :].values - data.loc[:, 'FA', :].values
-result_diff = permutation_cluster_1samp_test(diff, out_type='mask')
-print(result_diff[1:3])
+print(f'> Significance and slice indices: {result_FA[1:3]}')
 
-# Colours for hits and false alarms
+# Test for difference
+print('\n> Hits minus false alarms (difference)')
+diff = data.loc[:, 'H', :].values - data.loc[:, 'FA', :].values
+result_diff_H_FA = permutation_cluster_1samp_test(diff, out_type='mask')
+print(f'> Significance and slice indices: {result_diff_H_FA[1:3]}')
+
+# %% Cluster permutation stats for event-locked (M, CR) pupil traces
+
+# Open the store
+event_ranges = pd.HDFStore('../vig/analysis/event_ranges_50hz.h5')
+event_baselines = pd.HDFStore('../vig/analysis/event_baselines_50hz.h5')
+
+# Gather data from all subjects into single DataFrames
+df_events = pd.DataFrame()
+df_event_baselines = pd.DataFrame()
+df_event_evoked_scalar = pd.DataFrame()
+for k in event_ranges.keys():
+
+    # Load pupil data, keep only misses and correct rejections, add subject ID
+    p = event_ranges[k].rename(columns={'event': 'event_type'}).reset_index()
+    p = p.loc[p.outcome.isin(['CR', 'M'])]
+    p['subject'] = k[1:]
+
+    # As above but for baselines
+    bls = event_baselines[k].reset_index()
+    bls['subject'] = k[1:]
+    categories = (p.groupby(['event', 'outcome', 'timeblock'], as_index=False)
+                   .count()[['event', 'outcome', 'timeblock']])
+    bls = bls.merge(categories, on='event').reset_index()
+    bls = bls.loc[bls.outcome.isin(['CR', 'M'])]
+
+    # Get indices of valid trials. These are trials which contain less than
+    # 25 percent interpolated data and which do not contain a blink in the
+    # baseline period.
+    use_trials = np.intersect1d(
+        p[p.reject == 0].event.unique(),  # As marked by reject_bad_trials
+        bls[bls.masked == 0].event.to_numpy())  # No blink in baseline
+
+    # Calculate z score of pupil data for events and baselines
+    p['pz'] = (p.p - p.p.mean()) / p.p.std()
+    bls['pz'] = (bls.p - bls.p.mean()) / bls.p.std()
+
+    # Get the scalar values for evoked responses
+    evoked = (p.loc[((p.event.isin(use_trials)) & (p.onset >= 25))]
+              .groupby(by=['subject', 'timeblock', 'outcome'], as_index=False)
+              .mean())
+
+    # Drop trials with blink in baseline or too much interpolated data and
+    # then average by subject / outcome / onset
+    p = (p.set_index('event').loc[use_trials]
+         .reset_index()
+         .groupby(by=['subject', 'outcome', 'onset'], as_index=False)
+         .mean())
+    bls = (bls.set_index('event').loc[use_trials]
+           .reset_index()
+           .groupby(by=['subject', 'timeblock', 'outcome'],
+                    as_index=False)['pz']
+           .mean())
+
+    # Time relevant to stimulus onset (500 ms baseline for events)
+    p['Time'] = (p.onset - 25) * (1/50)
+
+    # Add to aggregated DFs
+    df_events = df_events.append(p)
+    df_event_baselines = df_event_baselines.append(bls)
+    df_event_evoked_scalar = df_event_evoked_scalar.append(evoked)
+
+# Close the stores
+event_ranges.close()
+event_baselines.close()
+
+# Save to CSV format
+df_events.to_csv(
+    '../vig/analysis/ag_pupil_event_traces_subject_outcome_onset.csv')
+df_event_baselines.to_csv(
+    '../vig/analysis/ag_pupil_event_baselines_subject_outcome_onset.csv')
+df_event_evoked_scalar.to_csv(
+    '../vig/analysis/ag_pupil_event_evoked_scalar_subject_outcome_onset.csv')
+
+# Set relevant multi index
+df_events = df_events.set_index(['subject', 'outcome', 'onset'])
+
+# Perform cluster-based permutation stats
+print('*** Cluster permutation tests for event-locked pupil traces ***\n')
+
+# Prepare the data
+data = df_events['p_pc'].unstack()
+
+# Test for hits
+print('\n> Correct rejections')
+result_CR = permutation_cluster_1samp_test(
+    data.loc[:, 'CR', :].values, out_type='mask')
+print(f'> Significance and slice indices: {result_CR[1:3]}')
+
+# Test for false alarms
+print('\n> Misses')
+result_M = permutation_cluster_1samp_test(
+    data.loc[:, 'M', :].values, out_type='mask')
+print(f'> Significance and slice indices: {result_M[1:3]}')
+
+# Test for difference
+print('\n> Correct rejections minus misses (difference)')
+diff = data.loc[:, 'CR', :].values - data.loc[:, 'M', :].values
+result_diff_CR_M = permutation_cluster_1samp_test(diff, out_type='mask')
+print(f'> Significance and slice indices: {result_diff_CR_M[1:3]}')
+
+# %% Plot the pupil data for stimulus and button events
+
+# Colour mappings
 palette = sns.color_palette()
-color_mapping = {'H': palette[4], 'FA': palette[3]}
+color_mapping_CR_M = {'CR': palette[0], 'M': palette[2]}
+color_mapping_H_FA = {'H': palette[4], 'FA': palette[3]}
 
 # Plot the pupil traces
-fig, ax = plt.subplots()
-ax = sns.lineplot(data=df, x='onset', y='p_sub', 
-                  hue='outcome', ci=68,
-                  estimator='mean',  # lambda x: sum(x)*.1/len(x)
-                  ax=ax, palette=color_mapping,
-                  n_boot=5000)
+fig, axs = plt.subplots(1, 2, figsize=(12, 5))
+
+# Correct rejections and misses first
+sns.lineplot(data=df_events, x='onset', y='p_pc',
+             hue='outcome', ci=68,  estimator='mean',
+             ax=axs[0], palette=color_mapping_CR_M,
+             n_boot=5000)
 
 # Lines for stim onset and baseline
-ax.vlines(0, ax.get_ybound()[0], ax.get_ybound()[1], 
-          linestyles='dashed', color='k')
-ax.hlines(0, -1, 1.5, linestyles='dashed', color='k')
-ax.set(xlabel='Time (s)',
-       ylabel='Pupil modulation (%)',
-       title='Button-locked',
-       ylim=(-4,12))
-ln1 = ax.hlines(-.5, (65-50)/50, (97-50)/50, lw=5, alpha=.5,color=p[4])
-ln2 = ax.hlines(-1, (36-50)/50, (104-50)/50, lw=5, alpha=.5,color=p[3])
-ax.text(.5,-3,'$P$ < .05', {'size':17})
-lgd = ax.get_legend()
-lgd.set_title('')
+axs[0].set_title('Event-locked')
+axs[0].axvline(25, 0, 1, linestyle='dashed', color='k')
+axs[0].set_xticks(np.arange(0, 150, 25))
+axs[0].set_xticklabels([str(val) for val in np.arange(-.5, 2.5, .5)])
+
+
+# Coloured bars to show significant clusters. The extent of these bars is
+# determined by the slice indices of the significant permutation tests
+# performed in the previous cells
+axs[0].hlines(-1, 51, 125, lw=5, alpha=.5, color=palette[2])
+axs[0].hlines(-1.5, 50, 125, lw=5, alpha=.5, color='k')
+axs[0].text(60, -2.7, '$P$ < .05', {'size': 17})
+
+# Now plot hits and false alarms
+sns.lineplot(data=df_keys, x='onset', y='p_pc',
+             hue='outcome', ci=68, estimator='mean',
+             ax=axs[1], palette=color_mapping_H_FA,
+             n_boot=5000)
+
+# Lines for stim onset and baseline
+axs[1].set_title('Button-locked')
+axs[1].axvline(50, 0, 1, linestyle='dashed', color='k')
+axs[1].set_xticks(np.arange(0, 150, 25))
+axs[1].set_xticklabels([str(val) for val in np.arange(-1., 2, .5)])
+
+# Coloured bars to show significant clusters. The extent of these bars is
+# determined by the slice indices of the significant permutation tests
+axs[1].hlines(-.5, 41, 105, lw=5, alpha=.5, color=palette[4])
+axs[1].hlines(-1, 37, 125, lw=5, alpha=.5, color=palette[3])
+axs[1].hlines(-1.5, 91, 125, lw=5, alpha=.5, color='k')
+axs[1].text(60, -2.7, '$P$ < .05', {'size': 17})
+
+# General tweaking for both subplots
+for ax in axs:
+    ax.get_legend().set_title('')
+    ax.set(ylim=(-4, 10),
+           xlabel='Time (s)',
+           ylabel='Pupil modulation (%)')
+    ax.axhline(0, 0, 1, linestyle='dashed', color='k')
+
+# Finish up
 sns.despine(offset=10, trim=True)
-fig.savefig('../analysis/button_FA_H_pupil.svg')
+plt.tight_layout(h_pad=3)
 
+# Save figure
+fig.savefig('../vig/analysis/event_button_pupil.tiff', dpi=300)
 
-# testing ground
+# %% Plot the scalar responses
 
-#data = df['p_pc'].unstack().groupby('outcome').mean().T.plot()
-#data = df['p_sub'].unstack().groupby('outcome').mean().T.plot()
+# # Figure
+fig, axs = plt.subplots(2, 2, figsize=(8, 7))
+axs = axs.flatten()
+
+# Plot baseline M/CR
+sns.pointplot(
+    data=df_event_baselines, x='timeblock', y='pz',  # z score
+    hue='outcome', dodge=.3, markers='s', ci=95, units='subject',
+    ax=axs[0], palette=color_mapping_CR_M
+)
+axs[0].set(
+    ylim=(-.6, .6),
+    ylabel='Pupil size (z)'
+)
+axs[0].legend([], [], frameon=False)
+
+# Plot button event M/CR
+sns.pointplot(
+    data=df_event_evoked_scalar.reset_index(), x='timeblock', y='p_pc',
+    hue='outcome', dodge=.3, markers='s', ci=95, units='subject',
+    ax=axs[1], palette=color_mapping_CR_M
+)
+axs[1].set(
+    ylim=(-2, 15),
+    ylabel='Pupil modulation (%)'
+)
+axs[1].get_legend().set_title('')
+
+# Hits / False Alarms
+# Plot baseline H/FA
+sns.pointplot(
+    data=df_key_baselines, x='timeblock', y='pz',
+    hue='outcome', dodge=.3, markers='s', ci=95, units='subject',
+    ax=axs[2], palette=color_mapping_H_FA
+)
+axs[2].set(
+    ylim=(-.6, .6),
+    ylabel='Pupil size (z)'
+)
+axs[2].legend([], [], frameon=False)
+
+# Plot button event H/FA
+sns.pointplot(
+    data=df_key_evoked_scalar, x='timeblock', y='p_pc',
+    hue='outcome', dodge=.3, markers='s', ci=95, units='subject',
+    ax=axs[3], palette=color_mapping_H_FA
+)
+axs[3].set(
+    ylim=(-2, 15),
+    ylabel='Pupil modulation (%)'
+)
+axs[3].get_legend().set_title('')
+
+# General subplot tweaking
+for ax in axs:
+    ax.set(xlabel='Watch Period')
+plt.tight_layout()
+
+# Save the figure
+fig.savefig('../vig/analysis/manuscript_figs/scalar_pupil.tiff',
+            dpi=300, bbox_inches='tight')
+
+# %% Save for repeated measures analysis in SPSS / JASP
+
+# Event baselines
+df1 = df_event_baselines.pivot(
+    index='subject', columns=['timeblock', 'outcome'], values='pz')
+cols = df1.columns.map('|'.join).str.strip('|')
+df1.columns = ['event_base|' + val for val in cols]
+
+# Key baselines
+df2 = df_key_baselines.pivot(
+    index='subject', columns=['timeblock', 'outcome'], values='pz')
+cols = df2.columns.map('|'.join).str.strip('|')
+df2.columns = ['key_base|' + val for val in cols]
+
+# Event evoked
+df3 = df_event_evoked_scalar.pivot(
+    index='subject', columns=['timeblock', 'outcome'], values='p_pc')
+cols = df3.columns.map('|'.join).str.strip('|')
+df3.columns = ['event_evoked|' + val for val in cols]
+
+# Key evoked
+df4 = df_key_evoked_scalar.pivot(
+    index='subject', columns=['timeblock', 'outcome'], values='p_pc')
+cols = df4.columns.map('|'.join).str.strip('|')
+df4.columns = ['key_evoked|' + val for val in cols]
+
+# Save as single DataFrame
+rm_pupil = pd.concat([df1, df2, df3, df4], axis=1)
+rm_pupil.to_csv('../vig/analysis/rm_pupil.csv')
