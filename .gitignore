@@ -131,6 +131,6 @@ dmypy.json
 # Folders
 EJN_submission/
 manuscript
-pmvig
 power_analysis
-vig
+
+*.h5

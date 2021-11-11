@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Wed Nov  3 12:21:31 2021
 
-@author: jtm545
+Data wrangling and plotting script for vigilance experiment
+===========================================================
+
+@author: jtm
+
 """
 
 # %% Imports  and config
@@ -38,11 +41,11 @@ df.groupby(by=['subject', 'outcome'])['RT'].describe().to_csv(
     '../vig/analysis/RT_descriptive_statistics.csv')
 
 # Median and median absolute deviation RT for hits across all subjects. We only
-# consider RTs less than 6000 ms, which is the minimum time between rare events
-med_RT = df.loc[df.RT <= 6000, 'RT'].median()
-mad_RT = mad(df.loc[df.RT <= 6000, 'RT'])
+# consider RTs that came after the firt rare event
+med_RT = df.loc[df.RT != -1, 'RT'].median()
+mad_RT = mad(df.loc[df.RT != -1, 'RT'])
 
-# Get the RTs, but not the rush trials
+# Get the RTs, but not the edge cases
 rts = df.loc[df.RT != -1, 'RT']
 
 # Two sets of bins with different widths to show hits and false alarms clearly
@@ -57,26 +60,33 @@ sns.histplot(rts, ax=ax2, bins=bins2, kde=False, color='k')
 # Tweak aesthetics
 # 0 - 2000 ms RTs
 ax.set(xlim=(0, 2000),
-       ylim=(0, 600),
        ylabel='Frequency',
        xlabel='')
-ax.axvspan(120, 1200, color='green', alpha=.1)
-ax.axvspan(0, 120, color='red', alpha=.1)
-ax.axvspan(1200, 15000, color='red', alpha=.1)
+
+# Group-level median RT +- 2 MAD
+lb = med_RT - (mad_RT*2)
+ub = med_RT + (mad_RT*2)
+ax.axvspan(lb, ub, color='green', alpha=.1)
+ax.axvspan(0, lb, color='red', alpha=.1)
+ax.axvspan(ub, 15000, color='red', alpha=.1)
+#ax.axvline(med_RT, 0, 1, color='green', alpha=.8)
 ax.set_title('Bin width = 50 ms', size=15)
 plt.setp(ax.get_xticklabels(), ha='right', rotation=45)
 
 # 2000 - 18000 ms RTs
 ax2.yaxis.tick_right()
 ax2.set(xlim=(2000, 18000),
-        xticks=[2000, 10000, 18000],
-        ylim=(0, 600),
-        ylabel='Frequency',
-        xlabel='')
+        xticks=[2000, 10000, 18000])
 ax2.axvspan(1000, 1200, color='green', alpha=.1)
 ax2.axvspan(1200, 18000, color='red', alpha=.1)
 ax2.set_title('Bin width = 500 ms', size=15)
 plt.setp(ax2.get_xticklabels(), ha='right', rotation=45)
+
+# General subplot tweaking
+for ax in [ax, ax2]:
+    ax.set(xlabel='',
+           ylabel='Frequency',
+           ylim=(0, 600))
 
 fig.tight_layout()
 fig.text(.55, .000001, 'Time to last critical signal (ms)', ha='center')
@@ -120,12 +130,6 @@ accuracy = (df.groupby(['subject', 'timeblock', 'target', 'outcome'])
 accuracy['percentage'] = accuracy.proportion * 100.
 accuracy = accuracy.reset_index()
 
-# Save for repeated measures analysis in JASP / SPSS
-accuracy_rm = accuracy.pivot(
-    index='subject', columns=['timeblock', 'outcome'], values=['percentage'])
-accuracy_rm.columns = accuracy_rm.columns.map('|'.join).str.strip('|')
-accuracy_rm.to_csv('../vig/analysis/rm_percentage_outcomes.csv')
-
 # %% Calculate signal detection outcomes (d' and c) per Subject | Watch period
 
 sdt = accuracy.pivot_table(index=['subject', 'timeblock'],
@@ -134,11 +138,6 @@ sdt = accuracy.pivot_table(index=['subject', 'timeblock'],
 sdt['dp'] = norm.ppf(sdt.loc[:, 'H']) - norm.ppf(sdt.loc[:, 'FA'])
 sdt['c'] = -(norm.ppf(sdt.loc[:, 'H']) + norm.ppf(sdt.loc[:, 'FA'])) / 2
 sdt = sdt.reset_index()
-
-# Save for repeated measures analysis in JASP / SPSS
-sdt_rm = sdt.pivot(index='subject', columns=['timeblock'], values=['dp', 'c'])
-sdt_rm.columns = sdt_rm.columns.map('|'.join).str.strip('|')
-sdt_rm.to_csv('../vig/analysis/rm_c_dp_timeblock.csv')
 
 # %% Plot performance measures
 
@@ -191,16 +190,33 @@ sns.pointplot(x='timeblock', y='c',
               data=sdt,
               color='k', markers='s', ax=ax5)
 ax5.set_xlabel('Watch Period')
-ax5.set_ylabel("Response bias ($c$)")
+ax5.set_ylabel('Response bias ($c$)')
 ax5.set_ylim((.7, 1.4))
 
 plt.tight_layout()
 
-# Save figure, also RT hit data for repeated measures analysis in JASP / SPSS
+# Save figure
 fig.savefig('../vig/analysis/manuscript_figs/behavioral_data.tiff', dpi=300)
-rthits_rm = rt_hits.pivot(index='subject', columns=['timeblock'], values='RT')
-rthits_rm.columns = rthits_rm.columns.map('|'.join).str.strip('|')
-rthits_rm.to_csv('../vig/analysis/rm_rt_hits_timeblock.csv')
+
+# %% Save behavioral data for repeated measures analysis in SPSS / JASP
+
+# Accuracy
+df1 = accuracy.pivot(
+    index='subject', columns=['timeblock', 'outcome'], values=['percentage'])
+df1.columns = df1.columns.map('|'.join).str.strip('|')
+
+# Signal detection theory measures
+df2 = sdt.pivot(index='subject', columns=['timeblock'], values=['dp', 'c'])
+df2.columns = df2.columns.map('|'.join).str.strip('|')
+
+# Reaction times
+df3 = rt_hits.pivot(index='subject', columns=['timeblock'], values='RT')
+cols = df3.columns.map('|'.join).str.strip('|')
+df3.columns = ['RT|' + val for val in cols]
+
+# Save in single
+rm_behavioral = pd.concat([df1, df2, df3], axis=1)
+rm_behavioral.to_csv('../vig/analysis/rm_behavioral.csv')
 
 # %% Cluster permutation stats for button-locked (H, FA) pupil traces
 
@@ -212,11 +228,13 @@ key_baselines = pd.HDFStore('../vig/analysis/key_baselines_50hz.h5')
 df_keys = pd.DataFrame()
 df_key_baselines = pd.DataFrame()
 df_key_evoked_scalar = pd.DataFrame()
+s_pct_exclude = pd.Series(dtype=float)
 for k in key_ranges.keys():
 
     # Load pupil data and add subject ID
     p = key_ranges[k].rename(columns={'event': 'event_type'}).reset_index()
     p['subject'] = k[1:]
+    print(1-p.reject.value_counts(normalize=True)[0])
 
     # Load baselines and drop those which contain a blink
     bls = key_baselines[k].reset_index()
@@ -224,6 +242,7 @@ for k in key_ranges.keys():
     categories = (p.groupby(['event', 'outcome', 'timeblock'], as_index=False)
                    .count()[['event', 'outcome', 'timeblock']])
     bls = bls.merge(categories, on='event')
+    n_trials = len(bls)
 
     # Get indices of valid trials. These are trials which contain less than
     # 25 percent interpolated data and which do not contain a blink in the
@@ -232,12 +251,16 @@ for k in key_ranges.keys():
         p[p.reject == 0].event.unique(),  # As marked by reject_bad_trials
         bls[bls.masked == 0].event.to_numpy())  # No blink in baseline
 
+    # Keep track of the percentage of excluded trials for each participant
+    s_pct_exclude = s_pct_exclude.append(
+        pd.Series(1 - len(use_trials) / n_trials, index=[k[1:]]))
+
     # Calculate z score of pupil data
     p['pz'] = (p.p - p.p.mean()) / p.p.std()
     bls['pz'] = (bls.p - bls.p.mean()) / bls.p.std()
 
     # Get the scalar values for evoked responses
-    evoked = (p.loc[((p.event.isin(use_trials)) & (p.onset >= 50))]
+    evoked = (p.loc[((p.event.isin(use_trials)) & (p.onset >= 25))]
               .groupby(by=['subject', 'timeblock', 'outcome'], as_index=False)
               .mean())
 
@@ -264,6 +287,9 @@ for k in key_ranges.keys():
 # Close the stores
 key_ranges.close()
 key_baselines.close()
+
+# Average percentage of excluded trials
+print(f'Average percentage of excluded trials: {s_pct_exclude.mean()}')
 
 df_keys.to_csv(
     '../vig/analysis/ag_pupil_key_traces_subject_outcome_onset.csv')
@@ -309,6 +335,7 @@ event_baselines = pd.HDFStore('../vig/analysis/event_baselines_50hz.h5')
 df_events = pd.DataFrame()
 df_event_baselines = pd.DataFrame()
 df_event_evoked_scalar = pd.DataFrame()
+s_pct_exclude = pd.Series(dtype=float)
 for k in event_ranges.keys():
 
     # Load pupil data, keep only misses and correct rejections, add subject ID
@@ -323,6 +350,7 @@ for k in event_ranges.keys():
                    .count()[['event', 'outcome', 'timeblock']])
     bls = bls.merge(categories, on='event').reset_index()
     bls = bls.loc[bls.outcome.isin(['CR', 'M'])]
+    n_trials = len(bls)
 
     # Get indices of valid trials. These are trials which contain less than
     # 25 percent interpolated data and which do not contain a blink in the
@@ -330,6 +358,10 @@ for k in event_ranges.keys():
     use_trials = np.intersect1d(
         p[p.reject == 0].event.unique(),  # As marked by reject_bad_trials
         bls[bls.masked == 0].event.to_numpy())  # No blink in baseline
+
+    # Keep track of the percentage of excluded trials for each participant
+    s_pct_exclude = s_pct_exclude.append(
+        pd.Series(1 - len(use_trials) / n_trials, index=[k[1:]]))
 
     # Calculate z score of pupil data for events and baselines
     p['pz'] = (p.p - p.p.mean()) / p.p.std()
@@ -363,6 +395,9 @@ for k in event_ranges.keys():
 # Close the stores
 event_ranges.close()
 event_baselines.close()
+
+# Average percentage of excluded trials
+print(f'Average percentage of excluded trials: {s_pct_exclude.mean()}')
 
 # Save to CSV format
 df_events.to_csv(
@@ -416,7 +451,7 @@ sns.lineplot(data=df_events, x='onset', y='p_pc',
              n_boot=5000)
 
 # Lines for stim onset and baseline
-axs[0].set_title('Event-locked')
+axs[0].get_legend().set_title('Stimulus-locked')
 axs[0].axvline(25, 0, 1, linestyle='dashed', color='k')
 axs[0].set_xticks(np.arange(0, 150, 25))
 axs[0].set_xticklabels([str(val) for val in np.arange(-.5, 2.5, .5)])
@@ -425,8 +460,8 @@ axs[0].set_xticklabels([str(val) for val in np.arange(-.5, 2.5, .5)])
 # Coloured bars to show significant clusters. The extent of these bars is
 # determined by the slice indices of the significant permutation tests
 # performed in the previous cells
-axs[0].hlines(-1, 51, 125, lw=5, alpha=.5, color=palette[2])
-axs[0].hlines(-1.5, 50, 125, lw=5, alpha=.5, color='k')
+axs[0].hlines(-1, 51, 125, lw=5, alpha=.5, color=palette[2])  # M
+axs[0].hlines(-1.5, 50, 125, lw=5, alpha=.5, color='k')  # CR - H
 axs[0].text(60, -2.7, '$P$ < .05', {'size': 17})
 
 # Now plot hits and false alarms
@@ -436,7 +471,7 @@ sns.lineplot(data=df_keys, x='onset', y='p_pc',
              n_boot=5000)
 
 # Lines for stim onset and baseline
-axs[1].set_title('Button-locked')
+axs[1].get_legend().set_title('Button-locked')
 axs[1].axvline(50, 0, 1, linestyle='dashed', color='k')
 axs[1].set_xticks(np.arange(0, 150, 25))
 axs[1].set_xticklabels([str(val) for val in np.arange(-1., 2, .5)])
@@ -450,7 +485,6 @@ axs[1].text(60, -2.7, '$P$ < .05', {'size': 17})
 
 # General tweaking for both subplots
 for ax in axs:
-    ax.get_legend().set_title('')
     ax.set(ylim=(-4, 10),
            xlabel='Time (s)',
            ylabel='Pupil modulation (%)')
@@ -461,7 +495,7 @@ sns.despine(offset=10, trim=True)
 plt.tight_layout(h_pad=3)
 
 # Save figure
-fig.savefig('../vig/analysis/event_button_pupil.tiff', dpi=300)
+fig.savefig('../vig/analysis/manuscript_figs/event_button_pupil.tiff', dpi=300)
 
 # %% Plot the scalar responses
 
@@ -477,13 +511,13 @@ sns.pointplot(
 )
 axs[0].set(
     ylim=(-.6, .6),
-    ylabel='Pupil size (z)'
+    ylabel='Baseline pupil size (z)'
 )
 axs[0].legend([], [], frameon=False)
 
 # Plot button event M/CR
 sns.pointplot(
-    data=df_event_evoked_scalar.reset_index(), x='timeblock', y='p_pc',
+    data=df_event_evoked_scalar, x='timeblock', y='p_pc',  # Percent change
     hue='outcome', dodge=.3, markers='s', ci=95, units='subject',
     ax=axs[1], palette=color_mapping_CR_M
 )
@@ -491,24 +525,24 @@ axs[1].set(
     ylim=(-2, 15),
     ylabel='Pupil modulation (%)'
 )
-axs[1].get_legend().set_title('')
+axs[1].get_legend().set_title('Stimulus-locked')
 
 # Hits / False Alarms
 # Plot baseline H/FA
 sns.pointplot(
-    data=df_key_baselines, x='timeblock', y='pz',
+    data=df_key_baselines, x='timeblock', y='pz',  # z score
     hue='outcome', dodge=.3, markers='s', ci=95, units='subject',
     ax=axs[2], palette=color_mapping_H_FA
 )
 axs[2].set(
     ylim=(-.6, .6),
-    ylabel='Pupil size (z)'
+    ylabel='Baseline pupil size (z)'
 )
 axs[2].legend([], [], frameon=False)
 
 # Plot button event H/FA
 sns.pointplot(
-    data=df_key_evoked_scalar, x='timeblock', y='p_pc',
+    data=df_key_evoked_scalar, x='timeblock', y='p_pc',  # percent change
     hue='outcome', dodge=.3, markers='s', ci=95, units='subject',
     ax=axs[3], palette=color_mapping_H_FA
 )
@@ -516,7 +550,7 @@ axs[3].set(
     ylim=(-2, 15),
     ylabel='Pupil modulation (%)'
 )
-axs[3].get_legend().set_title('')
+axs[3].get_legend().set_title('Button-locked')
 
 # General subplot tweaking
 for ax in axs:
@@ -527,32 +561,89 @@ plt.tight_layout()
 fig.savefig('../vig/analysis/manuscript_figs/scalar_pupil.tiff',
             dpi=300, bbox_inches='tight')
 
-# %% Save for repeated measures analysis in SPSS / JASP
+# %% Save pupil scalars for repeated measures analysis in SPSS / JASP
 
 # Event baselines
 df1 = df_event_baselines.pivot(
-    index='subject', columns=['timeblock', 'outcome'], values='pz')
+    index='subject', columns=['timeblock', 'outcome'], values='pz')  # z scores
 cols = df1.columns.map('|'.join).str.strip('|')
 df1.columns = ['event_base|' + val for val in cols]
 
 # Key baselines
 df2 = df_key_baselines.pivot(
-    index='subject', columns=['timeblock', 'outcome'], values='pz')
+    index='subject', columns=['timeblock', 'outcome'], values='pz')  # z scores
 cols = df2.columns.map('|'.join).str.strip('|')
 df2.columns = ['key_base|' + val for val in cols]
 
 # Event evoked
 df3 = df_event_evoked_scalar.pivot(
-    index='subject', columns=['timeblock', 'outcome'], values='p_pc')
+    index='subject', columns=['timeblock', 'outcome'], values='p_pc')  # %
 cols = df3.columns.map('|'.join).str.strip('|')
 df3.columns = ['event_evoked|' + val for val in cols]
 
 # Key evoked
 df4 = df_key_evoked_scalar.pivot(
-    index='subject', columns=['timeblock', 'outcome'], values='p_pc')
+    index='subject', columns=['timeblock', 'outcome'], values='p_pc')  # %
 cols = df4.columns.map('|'.join).str.strip('|')
 df4.columns = ['key_evoked|' + val for val in cols]
 
 # Save as single DataFrame
 rm_pupil = pd.concat([df1, df2, df3, df4], axis=1)
 rm_pupil.to_csv('../vig/analysis/rm_pupil.csv')
+
+# %% Plot joint distribution of x,y gaze position for non-interpolated samples
+
+samples = pd.HDFStore('../vig/analysis/samples_50hz.h5')
+
+df = pd.DataFrame()
+for k in samples.keys():
+    data = samples[k]
+    data['subject'] = k[1:]
+    data['pz'] = (data['p'] - data['p'].mean()) / data['p'].std()  # z score
+    data['Minute'] = pd.cut(data.index, bins=31, labels=range(0, 31))
+    df = df.append(data)
+valid_samps = df[df.masked == 0].reset_index()
+
+# Plot x,y gaze distributions
+g = sns.jointplot(data=valid_samps, x='x', y='y',
+                  xlim=(0, 1024), ylim=(0, 768), kind='hist')
+g.fig.axes[0].invert_yaxis()
+g.ax_joint.set_xlabel('Gaze position (x)')
+g.ax_joint.set_ylabel('Gaze position (y)')
+g.savefig('../vig/analysis/manuscript_figs/gaze_hist.tiff', dpi=300)
+
+# %% Plot "tonic" pupil size for whole experiment
+
+# Get 'tonic' pupil size, which we operationally define as the z score of pupil
+# size averaged into 1-min bins across the whole task
+tonic = df.groupby(['subject', 'Minute'], as_index=False).mean()
+tonic = tonic.loc[tonic.Minute != 0]  # First minute was steady fixation
+
+# Prepare the data for permutation tests
+data = tonic.pivot(index='subject', columns=['Minute'], values='pz')
+
+# Test for tonic pupil
+print('\n> Tonic pupil')
+result_tonic = permutation_cluster_1samp_test(
+    data.values, out_type='mask')
+print(f'> Significance and slice indices: {result_tonic[1:3]}')
+
+# Plot tonic pupil size
+fig, ax = plt.subplots(figsize=(12, 5))
+sns.lineplot(data=tonic, x='Minute', y='pz',
+             ax=ax)
+
+# Coloured bar to show significant cluster. The extent of this bar is
+# determined by the slice indices of the significant permutation tests
+# performed above
+ax.hlines(-.5, 4, 12, lw=5, alpha=.5, color=palette[0])
+ax.text(13, -.5, '$P$ < .05', {'size': 17})
+
+# Tweak
+ax.set_ylabel('Pupil size (z)')
+sns.despine(trim=True)
+
+# Save
+fig.savefig('../vig/analysis/manuscript_figs/tonic_pupil.tiff', dpi=300)
+
+# %%

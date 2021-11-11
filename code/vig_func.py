@@ -74,12 +74,11 @@ def new_dataset(edf):
 
 
 def print_details(samps, blinks, events):
-    print(
-        f'> Loaded {len(samps)} samples ({len(samps)/SAMPLE_RATE} s recording)')
+    print(f'> Loaded {len(samps)} samples ({len(samps)/SAMPLE_RATE} s)')
     print(f'> Parsed {len(events)} experimental events')
     print(f'> Keys detected: {len(events[events.event=="key"])}')
-    print(
-        f'> Blinks detected: {len(blinks)} (average duration = {round(blinks.duration.mean())} ms)')
+    print(f'> Blinks detected: {len(blinks)}')
+    print(f'\taverage duration = {round(blinks.duration.mean())} ms)')
 
 
 def read_dataset(edf):
@@ -315,16 +314,14 @@ def calculate_sd_outcomes(events):
     # Get the median and median-absolute-deviation of RT. We only consider
     # RTs less than 6000 ms, which is the minimum time between rare events.
     # RTs longer than this will be automatically designated as false alarms.
-    med_RT = evs.loc[evs.RT <= 6000, 'RT'].median()
-    mad_RT = mad(evs.loc[evs.RT <= 6000, 'RT'])
+    #med_RT = evs.loc[evs.RT <= 6000, 'RT'].median()
+    #mad_RT = mad(evs.loc[evs.RT <= 6000, 'RT'])
 
-    # Hits are within three MADs either side of the median RT
-    evs.loc[((evs.RT >= med_RT + (3 * mad_RT)) |
-             (evs.RT <= med_RT - (3 * mad_RT))), 'outcome'] = 'FA'
+    # Hits are within 2 MADs either side of the group-level median RT
+    evs.loc[((evs.RT <= 1149) & (evs.RT >= 225)), 'outcome'] = 'H'
 
     # False alarms are outside of this range
-    evs.loc[((evs.RT <= med_RT + (3 * mad_RT)) &
-             (evs.RT >= med_RT - (3 * mad_RT))), 'outcome'] = 'H'
+    evs.loc[((evs.RT >= 1149) | (evs.RT <= 225)), 'outcome'] = 'FA'
 
     # Edge case (button pressed before any rare events)
     (evs.loc[evs.RT.notna()
