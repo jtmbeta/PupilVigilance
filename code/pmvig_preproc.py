@@ -100,7 +100,7 @@ for edf in edfs:
         pd.Series(lapse_thresh, index=[subject]))
 
     response['Lapse'] = 0
-    #response.loc[response.RT > medRT * 2, 'Lapse'] = 1
+    #response.loc[response.RT > medRT * 2, 'Lapse'] = 1  # Old
     response.loc[response.RT > lapse_thresh, 'Lapse'] = 1
 
     # Group trials into three blocks, and into six groups within a block

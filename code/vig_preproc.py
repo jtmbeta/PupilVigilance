@@ -92,8 +92,8 @@ for edf in edfs:
         events.time, bins=30, labels=range(0, 30)).astype('str')
 
     # Separate key responses and experimental events, then save
-    exp_events = events.loc[events.event != 'key']
-    key_events = events.loc[events.event == 'key']
+    exp_events = events.loc[events.event_type != 'key']
+    key_events = events.loc[events.event_type == 'key']
     exp_events.to_hdf('../vig/analysis/exp_events.h5',
                       key=subject, format='table',
                       data_columns=True, append=False)
@@ -143,7 +143,11 @@ for edf in edfs:
                          borrow_attributes=['event_type',
                                             'outcome',
                                             'timeblock',
-                                            'min'])
+                                            'min',
+                                            'event'])
+    
+    key_ranges = key_ranges.rename(columns={'event': 'stim_event'})
+    
     # Baseline correction
     # Baseline taken between -1000:-500 ms prior to response (med_RT = 660 ms)
     key_baselines = key_ranges.loc[:, slice(0, 25), :].groupby(

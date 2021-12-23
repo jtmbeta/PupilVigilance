@@ -53,7 +53,7 @@ pupil_ex = (df_pupil.loc[((df_pupil['pct_interp>25'] == 0)
 # Idxs for kept trials
 keeps = pupil_ex[['Subject', 'event']].drop_duplicates().reset_index(drop=True)
 
-# Kepp track of percent exclusions
+# Keep track of percent exclusions
 n_trials = len(df_pupil[df_pupil['BadSubj'] == 0].groupby(
     ['Subject', 'event'], as_index=False).count())
 pct_exclude = (1 - (len(keeps) / n_trials))
@@ -74,19 +74,19 @@ for sub in s.keys():
     baselinez = baselinez.append(p)
 s.close()
 
-# Get rid of the trials we want to keep
+# Get rid of the bad trials
 baselinez_ex = baselinez.reset_index().merge(keeps)
 baselinez_ex[['Block', 'TrialGroup']] = (baselinez_ex[['Block', 'TrialGroup']]
                                          .astype('int'))
 
 # Get the evoked responses
 evoked = (pupil_ex.loc[pupil_ex.onset > 25]  # Time of key press
-          .groupby(by=['Subject', 'Block', 'TrialGroup'],
+          .groupby(by=['Subject', 'event', 'Block', 'TrialGroup'],
                    as_index=False)['p_pc']  # Percent modulation
           .mean())
 
-# Get the evoked responses
-bls = (baselinez_ex.groupby(by=['Subject', 'Block', 'TrialGroup'],
+# Get the baselines
+bls = (baselinez_ex.groupby(by=['Subject', 'event', 'Block', 'TrialGroup'],
                             as_index=False)['pz']  # Z score
        .mean())
 
@@ -102,6 +102,7 @@ pvt = data.pivot_table(values='p_pc',
                        index=['Block', 'Subject'],
                        columns='onset')
 
+# Permutation tests
 print('\n> Block: 1')
 res1 = permutation_cluster_1samp_test(pvt.loc[1].values)
 print(f'> Significance and slice indices: {res1[1:3]}')
@@ -156,7 +157,7 @@ sns.despine(offset=10, right=False, left=True,
 sns.despine(offset=10, trim=True, ax=ax)
 
 fig.savefig('../pmvig/analysis/manuscript_figs/pmvig_pupil_block.tiff',
-            dpi=100, bbox_inches='tight')
+            dpi=300, bbox_inches='tight')
 
 # %% Plot pupil scalars and performance metrics
 
@@ -205,16 +206,20 @@ axs[1].legend([], [], frameon=False)
 axs[1].set(ylim=(0, 4),
            ylabel='Lapses')
 
+ag_bls = bls.groupby(['Subject', 'Block', 'TrialGroup'],
+                   as_index=False)['pz'].mean()
 sns.pointplot(
-    data=bls, x='TrialGroup', y='pz',
+    data=ag_bls, x='TrialGroup', y='pz',
     units='Subject', hue='Block',
     dodge=.3, ax=axs[2], markers='s'
 )
 axs[2].set(ylabel='Baseline pupil size (z)')
 axs[2].legend([], [], frameon=False)
 
+ag_evoked = evoked.groupby(['Subject', 'Block', 'TrialGroup'],
+                   as_index=False)['p_pc'].mean()
 sns.pointplot(
-    data=evoked, x='TrialGroup', y='p_pc',
+    data=ag_evoked, x='TrialGroup', y='p_pc',
     units='Subject', hue='Block',
     dodge=.3, ax=axs[3], markers='s'
 )
@@ -224,7 +229,7 @@ axs[3].set(ylabel='Pupil modulation (%)',
 plt.tight_layout()
 fig.savefig(
     '../pmvig/analysis/manuscript_figs/performance_and_pupil_figure.tiff',
-    dpi=300)
+    dpi=300, bbox_inches='tight')
 
 # Save behavioral data for repeated measures analysis in SPSS / JASP
 ag[['Block', 'TrialGroup']] = ag[['Block', 'TrialGroup']].astype('str')
@@ -236,13 +241,14 @@ performance_stats.columns = performance_stats.columns.map(
 performance_stats.to_csv('../pmvig/analysis/rm_behavioral.csv')
 
 # Save pupil data for repeated measures analysis in SPSS / JASP
-evoked[['Block', 'TrialGroup']] = evoked[['Block', 'TrialGroup']].astype('str')
-bls[['Block', 'TrialGroup']] = bls[['Block', 'TrialGroup']].astype('str')
-pupil_stats = evoked.pivot(index='Subject',
-                           columns=['Block', 'TrialGroup'], values=['p_pc'])
+ag_evoked[['Block', 'TrialGroup']] = ag_evoked[['Block', 'TrialGroup']].astype(
+    'str')
+ag_bls[['Block', 'TrialGroup']] = ag_bls[['Block', 'TrialGroup']].astype('str')
+pupil_stats = ag_evoked.pivot(index='Subject',
+                              columns=['Block', 'TrialGroup'], values=['p_pc'])
 pupil_stats.columns = pupil_stats.columns.map('|'.join).str.strip('|')
-bls_pivot = bls.pivot(index='Subject',
-                      columns=['Block', 'TrialGroup'], values=['pz'])
+bls_pivot = ag_bls.pivot(index='Subject',
+                         columns=['Block', 'TrialGroup'], values=['pz'])
 bls_pivot.columns = bls_pivot.columns.map('|'.join).str.strip('|')
 pupil_stats = pupil_stats.merge(bls_pivot, on='Subject')
 pupil_stats.to_csv('../pmvig/analysis/rm_pupil.csv')
@@ -332,4 +338,22 @@ sns.despine(offset=10, trim=True, ax=axs[1])
 plt.tight_layout()
 
 fig.savefig(
-    '../pmvig/analysis/manuscript_figs/pmvig_fastest_slowest.tiff', dpi=300)
+    '../pmvig/analysis/manuscript_figs/pmvig_fastest_slowest.tiff', dpi=300,
+    bbox_inches='tight')
+
+# %% Plot x,y gaze distributions
+g = sns.jointplot(data=pupil_ex, x='x', y='y',
+                  xlim=(0, 1024), ylim=(0, 768), kind='hist')
+g.fig.axes[0].invert_yaxis()
+g.ax_joint.set_xlabel('Gaze position (x)')
+g.ax_joint.set_ylabel('Gaze position (y)')
+g.savefig('../pmvig/analysis/manuscript_figs/gaze_hist.tiff', dpi=300)
+
+pupil_ex.groupby(['Subject'])[['x','y']].mean().mean()
+pupil_ex.groupby(['Subject'])[['x','y']].mean().std()
+
+# %%
+
+corr = df_RT.merge(bls[['pz', 'Subject', 'event']], on=['Subject', 'event'])
+corr = corr.merge(evoked[['p_pc', 'Subject', 'event']], on=['Subject', 'event'])
+corr.to_csv('../pmvig/analysis/all_measures.csv')

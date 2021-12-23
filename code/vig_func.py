@@ -143,13 +143,15 @@ def read_dataset(edf):
 
     # Get rid of the junk and give sensible names
     df_events = df_events[[1, 2, 3]].copy()
-    df_events.columns = ['time', 'key', 'event']
-    df_events.loc[df_events['key'] == 'KEY_PRESS_FOUND', 'event'] = 'key'
-    df_events.loc[df_events['event'].str.contains(
-        'NORMAL', na=False), 'event'] = 'normal'
-    df_events.loc[df_events['event'].str.contains(
-        'RARE', na=False), 'event'] = 'rare'
-    df_events = df_events[['time', 'event']]
+    df_events.columns = ['time', 'key', 'msg']
+    df_events.loc[df_events['key'] == 'KEY_PRESS_FOUND', 'event_type'] = 'key'
+    df_events.loc[df_events['msg'].str.contains(
+        'NORMAL', na=False), 'event_type'] = 'normal'
+    df_events.loc[df_events['msg'].str.contains(
+        'RARE', na=False), 'event_type'] = 'rare'
+    df_events['event'] = df_events['msg'].str.extract('(\d\d\d\d)')
+    df_events['event'] = df_events['event'].str.lstrip('0')
+    df_events = df_events[['time', 'event_type', 'event']]
     df_events.time = df_events.time.astype('int')
     df_events.index = df_events.time.astype('int')
 
@@ -272,11 +274,11 @@ def calculate_RTs(events):
 
     # Loop over rows and check what event we are dealing with
     for idx, row in rts.iterrows():
-        if row['event'] == 'rare':
+        if row['event_type'] == 'rare':
             last_rare_idx = idx
-        if row['event'] == 'normal':
+        if row['event_type'] == 'normal':
             last_normal_idx = idx
-        if row['event'] == 'key':
+        if row['event_type'] == 'key':
             if last_rare_idx == None:  # Edge case
                 # A key was pressed before the first rare event
                 rts.loc[idx, 'RT'] = -1  # Set RT to -1
@@ -286,7 +288,8 @@ def calculate_RTs(events):
                 # rare event and the current keypress
                 rts.loc[idx, 'RT'] = (
                     row.time - rts.loc[last_rare_idx, 'time'])
-
+                rts.loc[idx, 'event'] = rts.loc[last_rare_idx, 'event']
+                
                 # Update last rare / normal idx variables
                 rts.loc[idx, 'last_rare_from_key_idx'] = last_rare_idx
                 rts.loc[idx, 'last_normal_from_key_idx'] = last_normal_idx
@@ -338,7 +341,7 @@ def calculate_sd_outcomes(events):
                                                'FA', ['outcome', 'RT']].values)
 
     # A miss is when a rare event does not have a valid RT
-    evs.loc[((evs.event == 'rare') & (evs.RT.isnull())), 'outcome'] = 'M'
+    evs.loc[((evs.event_type == 'rare') & (evs.RT.isnull())), 'outcome'] = 'M'
 
     # All other events are correct rejections
     evs.loc[evs.outcome.isna(), 'outcome'] = 'CR'
